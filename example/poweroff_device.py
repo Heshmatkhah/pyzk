@@ -8,15 +8,14 @@ sys.path.append(ROOT_DIR)
 
 from zk import ZK
 
-
 conn = None
 zk = ZK('192.168.2.201', port=4370)
 try:
-    conn = zk.connect()
-    print ("Shutdown the device...")
-    conn.poweroff()
+	conn = zk.connect()
+	print("Shutdown the device...")
+	conn.poweroff()
 except Exception as e:
-    print ("Process terminate : {}".format(e))
+	print("Process terminate : {}".format(e))
 finally:
-    if conn:
-        conn.disconnect()
+	if conn:
+		conn.disconnect()
