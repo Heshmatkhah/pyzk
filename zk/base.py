@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 import codecs
+import logging
 import sys
 from datetime import datetime
 from socket import AF_INET, SOCK_DGRAM, SOCK_STREAM, socket, timeout
@@ -136,12 +137,16 @@ class ZK(object):
 		self.__data_recv = None
 		self.__data = None
 
+		self.logger = logging.getLogger(f"ZK {ip}:{port}")
+		if verbose:
+			self.logger.setLevel(logging.DEBUG)
+		self.verbose = verbose
+
 		self.is_connect = False
 		self.is_enabled = True
 		self.helper = ZK_helper(ip, port, timeout)
 		self.force_udp = force_udp
 		self.ommit_ping = ommit_ping
-		self.verbose = verbose
 		self.encoding = encoding
 		self.tcp = not force_udp
 		self.users = 0
@@ -375,7 +380,7 @@ class ZK(object):
 		cmd_response = self.__send_command(const.CMD_CONNECT)
 		self.__session_id = self.__header[2]
 		if cmd_response.get('code') == const.CMD_ACK_UNAUTH:
-			if self.verbose: print("try auth")
+			self.logger.debug("try auth")
 			command_string = make_commkey(self.__password, self.__session_id)
 			cmd_response = self.__send_command(const.CMD_AUTH, command_string)
 		if cmd_response.get('status'):
@@ -384,7 +389,7 @@ class ZK(object):
 		else:
 			if cmd_response["code"] == const.CMD_ACK_UNAUTH:
 				raise ZKErrorResponse("Unauthenticated")
-			if self.verbose: print("connect err response {} ".format(cmd_response["code"]))
+			self.logger.debug("connect err response %d ", cmd_response["code"])
 			raise ZKErrorResponse("Invalid response: Can't connect")
 
 	def disconnect(self):
@@ -659,7 +664,7 @@ class ZK(object):
 		response_size = 1024
 		cmd_response = self.__send_command(command, b'', response_size)
 		if cmd_response.get('status'):
-			if self.verbose: print(codecs.encode(self.__data, 'hex'))
+			self.logger.debug(codecs.encode(self.__data, 'hex'))
 			size = len(self.__data)
 			if len(self.__data) >= 80:
 				fields = unpack('20i', self.__data[:80])
@@ -910,18 +915,37 @@ class ZK(object):
 			if not group_id:
 				group_id = 0
 			try:
-				command_string = pack('HB5s8sIxBHI', uid, privilege, password.encode(self.encoding, errors='ignore'), name.encode(self.encoding, errors='ignore'), card, int(group_id), 0, int(user_id))
+				command_string = pack(
+					'HB5s8sIxBHI',
+					uid,
+					privilege,
+					password.encode(self.encoding, errors='ignore'),
+					name.encode(self.encoding, errors='ignore'),
+					card,
+					int(group_id),
+					0,
+					int(user_id)
+				)
 			except Exception as e:
-				if self.verbose: print("s_h Error pack: %s" % e)
-				if self.verbose: print("Error pack: %s" % sys.exc_info()[0])
+				self.logger.debug("s_h Error pack: %s", e)
+				self.logger.debug("Error pack: %s", sys.exc_info()[0])
 				raise ZKErrorResponse("Can't pack user")
 		else:
 			name_pad = name.encode(self.encoding, errors='ignore').ljust(24, b'\x00')[:24]
 			card_str = pack('<I', int(card))[:4]
-			command_string = pack('HB8s24s4sx7sx24s', uid, privilege, password.encode(self.encoding, errors='ignore'), name_pad, card_str, group_id.encode(), user_id.encode())
+			command_string = pack(
+				'HB8s24s4sx7sx24s',
+				uid,
+				privilege,
+				password.encode(self.encoding, errors='ignore'),
+				name_pad,
+				card_str,
+				group_id.encode(),
+				user_id.encode(),
+			)
 		response_size = 1024  # TODO check response?
 		cmd_response = self.__send_command(command, command_string, response_size)
-		if self.verbose: print("Response: %s" % cmd_response)
+		self.logger.debug("Response: %s", cmd_response)
 		if not cmd_response.get('status'):
 			raise ZKErrorResponse("Can't set user")
 		self.refresh_data()
@@ -1089,9 +1113,9 @@ class ZK(object):
 				if resp[-6:] == b'\x00\x00\x00\x00\x00\x00':  # padding? bug?
 					resp = resp[:-6]
 				return Finger(uid, temp_id, 1, resp)
-			if self.verbose: print("retry get_user_template")
+			self.logger.debug("retry get_user_template")
 		else:
-			if self.verbose: print("Can't read/find finger")
+			self.logger.debug("Can't read/find finger")
 			return None
 
 	def get_templates(self):
@@ -1104,16 +1128,16 @@ class ZK(object):
 		templates = []
 		templatedata, size = self.read_with_buffer(const.CMD_DB_RRQ, const.FCT_FINGERTMP)
 		if size < 4:
-			if self.verbose: print("WRN: no user data")
+			self.logger.debug("WRN: no user data")
 			return []
 		total_size = unpack('i', templatedata[0:4])[0]
-		if self.verbose: print("get template total size {}, size {} len {}".format(total_size, size, len(templatedata)))
+		self.logger.debug("get template total size %d, size %d len %d", total_size, size, len(templatedata))
 		templatedata = templatedata[4:]
 		while total_size:
 			size, uid, fid, valid = unpack('HHbb', templatedata[:6])
 			template = unpack("%is" % (size - 6), templatedata[6:size])[0]
 			finger = Finger(uid, fid, valid, template)
-			if self.verbose: print(finger)
+			self.logger.debug(finger)
 			templates.append(finger)
 			templatedata = templatedata[size:]
 			total_size -= size
@@ -1131,18 +1155,20 @@ class ZK(object):
 		users = []
 		max_uid = 0
 		userdata, size = self.read_with_buffer(const.CMD_USERTEMP_RRQ, const.FCT_USER)
-		if self.verbose: print("user size {} (= {})".format(size, len(userdata)))
+		self.logger.debug("user size %d (= %d)", size, len(userdata))
 		if size <= 4:
-			print("WRN: missing user data")
+			self.logger.warning("WRN: Missing user data")
 			return []
 		total_size = unpack("I", userdata[:4])[0]
 		self.user_packet_size = total_size / self.users
 		if not self.user_packet_size in [28, 72]:
-			if self.verbose: print("WRN packet size would be  %i" % self.user_packet_size)
+			self.logger.debug("WRN packet size would be  %i", self.user_packet_size)
 		userdata = userdata[4:]
 		if self.user_packet_size == 28:
 			while len(userdata) >= 28:
-				uid, privilege, password, name, card, group_id, timezone, user_id = unpack('<HB5s8sIxBhI', userdata.ljust(28, b'\x00')[:28])
+				uid, privilege, password, name, card, group_id, timezone, user_id = unpack('<HB5s8sIxBhI',
+																						   userdata.ljust(28, b'\x00')[
+																						   :28])
 				if uid > max_uid: max_uid = uid
 				password = (password.split(b'\x00')[0]).decode(self.encoding, errors='ignore')
 				name = (name.split(b'\x00')[0]).decode(self.encoding, errors='ignore').strip()
@@ -1153,7 +1179,7 @@ class ZK(object):
 					name = "NN-%s" % user_id
 				user = User(uid, name, privilege, password, group_id, user_id, card)
 				users.append(user)
-				if self.verbose: print("[6]user:", uid, privilege, password, name, card, group_id, timezone, user_id)
+				self.logger.debug("[6]user:", uid, privilege, password, name, card, group_id, timezone, user_id)
 				userdata = userdata[28:]
 		else:
 			while len(userdata) >= 72:
@@ -1249,65 +1275,65 @@ class ZK(object):
 		self.__sock.settimeout(60)
 		attempts = 3
 		while attempts:
-			if self.verbose: print("A:%i esperando primer regevent" % attempts)
+			self.logger.debug("A:%i esperando primer regevent", attempts)
 			data_recv = self.__sock.recv(1032)
 			self.__ack_ok()
-			if self.verbose: print(codecs.encode(data_recv, 'hex'))
+			self.logger.debug(codecs.encode(data_recv, 'hex'))
 			if self.tcp:
 				if len(data_recv) > 16:
 					res = unpack("H", data_recv.ljust(24, b"\x00")[16:18])[0]
-					if self.verbose: print("res %i" % res)
+					self.logger.debug("res %i", res)
 					if res == 0 or res == 6 or res == 4:
-						if self.verbose: print("posible timeout  o reg Fallido")
+						self.logger.debug("posible timeout  o reg Fallido")
 						break
 			else:
 				if len(data_recv) > 8:
 					res = unpack("H", data_recv.ljust(16, b"\x00")[8:10])[0]
-					if self.verbose: print("res %i" % res)
+					self.logger.debug("res %i", res)
 					if res == 6 or res == 4:
-						if self.verbose: print("posible timeout")
+						self.logger.debug("posible timeout")
 						break
-			if self.verbose: print("A:%i esperando 2do regevent" % attempts)
+			self.logger.debug("A:%i esperando 2do regevent", attempts)
 			data_recv = self.__sock.recv(1032)
 			self.__ack_ok()
-			if self.verbose: print(codecs.encode(data_recv, 'hex'))
+			self.logger.debug(codecs.encode(data_recv, 'hex'))
 			if self.tcp:
 				if len(data_recv) > 8:
 					res = unpack("H", data_recv.ljust(24, b"\x00")[16:18])[0]
-					if self.verbose: print("res %i" % res)
+					self.logger.debug("res %i", res)
 					if res == 6 or res == 4:
-						if self.verbose: print("posible timeout  o reg Fallido")
+						self.logger.debug("posible timeout  o reg Fallido")
 						break
 					elif res == 0x64:
-						if self.verbose: print("ok, continue?")
+						self.logger.debug("ok, continue?")
 						attempts -= 1
 			else:
 				if len(data_recv) > 8:
 					res = unpack("H", data_recv.ljust(16, b"\x00")[8:10])[0]
-					if self.verbose: print("res %i" % res)
+					self.logger.debug("res %i", res)
 					if res == 6 or res == 4:
-						if self.verbose: print("posible timeout  o reg Fallido")
+						self.logger.debug("posible timeout  o reg Fallido")
 						break
 					elif res == 0x64:
-						if self.verbose: print("ok, continue?")
+						self.logger.debug("ok, continue?")
 						attempts -= 1
 		if attempts == 0:
 			data_recv = self.__sock.recv(1032)
 			self.__ack_ok()
-			if self.verbose: print(codecs.encode(data_recv, 'hex'))
+			self.logger.debug(codecs.encode(data_recv, 'hex'))
 			if self.tcp:
 				res = unpack("H", data_recv.ljust(24, b"\x00")[16:18])[0]
 			else:
 				res = unpack("H", data_recv.ljust(16, b"\x00")[8:10])[0]
-			if self.verbose: print("res %i" % res)
+			self.logger.debug("res %i", res)
 			if res == 5:
-				if self.verbose: print("finger duplicate")
+				self.logger.debug("finger duplicate")
 			if res == 6 or res == 4:
-				if self.verbose: print("posible timeout")
+				self.logger.debug("posible timeout")
 			if res == 0:
 				size = unpack("H", data_recv.ljust(16, b"\x00")[10:12])[0]
 				pos = unpack("H", data_recv.ljust(16, b"\x00")[12:14])[0]
-				if self.verbose: print("enroll ok", size, pos)
+				self.logger.debug("enroll ok", size, pos)
 				done = True
 		self.__sock.settimeout(self.__timeout)
 		self.reg_event(0)  # TODO: test
@@ -1325,13 +1351,13 @@ class ZK(object):
 		self.verify_user()
 		if not self.is_enabled:
 			self.enable_device()
-		if self.verbose: print("start live_capture")
+		self.logger.debug("start live_capture")
 		self.reg_event(const.EF_ATTLOG)
 		self.__sock.settimeout(new_timeout)
 		self.end_live_capture = False
 		while not self.end_live_capture:
 			try:
-				if self.verbose: print("esperando event")
+				self.logger.debug("esperando event")
 				data_recv = self.__sock.recv(1032)
 				self.__ack_ok()
 				if self.tcp:
@@ -1343,10 +1369,10 @@ class ZK(object):
 					header = unpack('<4H', data_recv[:8])
 					data = data_recv[8:]
 				if not header[0] == const.CMD_REG_EVENT:
-					if self.verbose: print("not event! %x" % header[0])
+					self.logger.debug("not event! %x", header[0])
 					continue
 				if not len(data):
-					if self.verbose: print("empty")
+					self.logger.debug("empty")
 					continue
 				while len(data) >= 10:
 					if len(data) == 10:
@@ -1382,12 +1408,12 @@ class ZK(object):
 						uid = tuser[0].uid
 					yield Attendance(user_id, timestamp, status, punch, uid)
 			except timeout:
-				if self.verbose: print("time out")
+				self.logger.debug("time out")
 				yield None  # return to keep watching
 			except (KeyboardInterrupt, SystemExit):
-				if self.verbose: print("break")
+				self.logger.debug("break")
 				break
-		if self.verbose: print("exit gracefully")
+		self.logger.debug("exit gracefully")
 		self.__sock.settimeout(self.__timeout)
 		self.reg_event(0)
 		if not was_enabled:
@@ -1416,41 +1442,41 @@ class ZK(object):
 		 """
 		data = []
 		tcp_length = self.__test_tcp_top(data_recv)
-		if self.verbose: print("tcp_length {}, size {}".format(tcp_length, size))
+		self.logger.debug("tcp_length %d, size %d", tcp_length, size)
 		if tcp_length <= 0:
-			if self.verbose: print("Incorrect tcp packet")
+			self.logger.debug("Incorrect tcp packet")
 			return None, b""
 		if (tcp_length - 8) < size:
-			if self.verbose: print("tcp length too small... retrying")
+			self.logger.debug("tcp length too small... retrying")
 			resp, bh = self.__recieve_tcp_data(data_recv, tcp_length - 8)
 			data.append(resp)
 			size -= len(resp)
-			if self.verbose: print("new tcp DATA packet to fill misssing {}".format(size))
+			self.logger.debug("new tcp DATA packet to fill misssing %d", size)
 			data_recv = bh + self.__sock.recv(size + 16)
-			if self.verbose: print("new tcp DATA starting with {} bytes".format(len(data_recv)))
+			self.logger.debug("new tcp DATA starting with %d bytes", len(data_recv))
 			resp, bh = self.__recieve_tcp_data(data_recv, size)
 			data.append(resp)
-			if self.verbose: print("for misssing {} recieved {} with extra {}".format(size, len(resp), len(bh)))
+			self.logger.debug("for misssing %d recieved %d with extra %d", size, len(resp), len(bh))
 			return b''.join(data), bh
 		recieved = len(data_recv)
-		if self.verbose: print("recieved {}, size {}".format(recieved, size))
+		self.logger.debug("recieved %d, size %d", recieved, size)
 		response = unpack('HHHH', data_recv[8:16])[0]
 		if recieved >= (size + 32):
 			if response == const.CMD_DATA:
 				resp = data_recv[16: size + 16]
-				if self.verbose: print("resp complete len {}".format(len(resp)))
+				self.logger.debug("resp complete len %d", len(resp))
 				return resp, data_recv[size + 16:]
 			else:
-				if self.verbose: print("incorrect response!!! {}".format(response))
+				self.logger.debug("incorrect response!!! %d", response)
 				return None, b""
 		else:
-			if self.verbose: print("try DATA incomplete (actual valid {})".format(recieved - 16))
+			self.logger.debug("try DATA incomplete (actual valid %d)", recieved - 16)
 			data.append(data_recv[16: size + 16])
 			size -= recieved - 16
 			broken_header = b""
 			if size < 0:
 				broken_header = data_recv[size:]
-				if self.verbose: print("broken", (broken_header).encode('hex'))
+				self.logger.debug("broken", (broken_header).encode('hex'))
 			if size > 0:
 				data_recv = self.__recieve_raw_data(size)
 				data.append(data_recv)
@@ -1459,37 +1485,37 @@ class ZK(object):
 	def __recieve_raw_data(self, size):
 		""" partial data ? """
 		data = []
-		if self.verbose: print("expecting {} bytes raw data".format(size))
+		self.logger.debug("expecting %d bytes raw data", size)
 		while size > 0:
 			data_recv = self.__sock.recv(size)
 			recieved = len(data_recv)
-			if self.verbose: print("partial recv {}".format(recieved))
-			if recieved < 100 and self.verbose: print("   recv {}".format(codecs.encode(data_recv, 'hex')))
+			self.logger.debug("partial recv %d", recieved)
+			if recieved < 100: self.logger.debug("   recv %s", codecs.encode(data_recv, 'hex'))
 			data.append(data_recv)
 			size -= recieved
-			if self.verbose: print("still need {}".format(size))
+			self.logger.debug("still need %d", size)
 		return b''.join(data)
 
 	def __recieve_chunk(self):
 		""" recieve a chunk """
 		if self.__response == const.CMD_DATA:
 			if self.tcp:
-				if self.verbose: print("_rc_DATA! is {} bytes, tcp length is {}".format(len(self.__data), self.__tcp_length))
+				self.logger.debug("_rc_DATA! is %d bytes, tcp length is %d", len(self.__data), self.__tcp_length)
 				if len(self.__data) < (self.__tcp_length - 8):
 					need = (self.__tcp_length - 8) - len(self.__data)
-					if self.verbose: print("need more data: {}".format(need))
+					self.logger.debug("need more data: %d", need)
 					more_data = self.__recieve_raw_data(need)
 					return b''.join([self.__data, more_data])
 				else:
-					if self.verbose: print("Enough data")
+					self.logger.debug("Enough data")
 					return self.__data
 			else:
-				if self.verbose: print("_rc len is {}".format(len(self.__data)))
+				self.logger.debug("_rc len is %d", len(self.__data))
 				return self.__data
 		elif self.__response == const.CMD_PREPARE_DATA:
 			data = []
 			size = self.__get_data_size()
-			if self.verbose: print("recieve chunk: prepare data size is {}".format(size))
+			self.logger.debug("recieve chunk: prepare data size is %d", size)
 			if self.tcp:
 				if len(self.__data) >= (8 + size):
 					data_recv = self.__data[8:]
@@ -1503,37 +1529,37 @@ class ZK(object):
 				else:
 					data_recv = broken_header
 				if len(data_recv) < 16:
-					print("trying to complete broken ACK %s /16" % len(data_recv))
-					if self.verbose: print(data_recv.encode('hex'))
+					self.logger.info("trying to complete broken ACK %s /16", len(data_recv))
+					self.logger.debug(data_recv.encode('hex'))
 					data_recv += self.__sock.recv(16 - len(data_recv))  # TODO: CHECK HERE_!
 				if not self.__test_tcp_top(data_recv):
-					if self.verbose: print("invalid chunk tcp ACK OK")
+					self.logger.debug("invalid chunk tcp ACK OK")
 					return None
 				response = unpack('HHHH', data_recv[8:16])[0]
 				if response == const.CMD_ACK_OK:
-					if self.verbose: print("chunk tcp ACK OK!")
+					self.logger.debug("chunk tcp ACK OK!")
 					return b''.join(data)
-				if self.verbose: print("bad response %s" % data_recv)
-				if self.verbose: print(codecs.encode(data, 'hex'))
+				self.logger.debug("bad response %s", data_recv)
+				self.logger.debug(codecs.encode(data, 'hex'))
 				return None
 
 				return resp
 			while True:
 				data_recv = self.__sock.recv(1024 + 8)
 				response = unpack('<4H', data_recv[:8])[0]
-				if self.verbose: print("# packet response is: {}".format(response))
+				self.logger.debug("# packet response is: %d", response)
 				if response == const.CMD_DATA:
 					data.append(data_recv[8:])
 					size -= 1024
 				elif response == const.CMD_ACK_OK:
 					break
 				else:
-					if self.verbose: print("broken!")
+					self.logger.debug("broken!")
 					break
-				if self.verbose: print("still needs %s" % size)
+				self.logger.debug("still needs %s", size)
 			return b''.join(data)
 		else:
-			if self.verbose: print("invalid response %s" % self.__response)
+			self.logger.debug("invalid response %s", self.__response)
 			return None
 
 	def __read_chunk(self, start, size):
@@ -1563,7 +1589,7 @@ class ZK(object):
 		else:
 			MAX_CHUNK = 16 * 1024
 		command_string = pack('<bhii', 1, command, fct, ext)
-		if self.verbose: print("rwb cs", command_string)
+		self.logger.debug("rwb cs", command_string)
 		response_size = 1024
 		data = []
 		start = 0
@@ -1572,24 +1598,24 @@ class ZK(object):
 			raise ZKErrorResponse("RWB Not supported")
 		if cmd_response['code'] == const.CMD_DATA:
 			if self.tcp:
-				if self.verbose: print("DATA! is {} bytes, tcp length is {}".format(len(self.__data), self.__tcp_length))
+				self.logger.debug("DATA! is %d bytes, tcp length is %d", len(self.__data), self.__tcp_length)
 				if len(self.__data) < (self.__tcp_length - 8):
 					need = (self.__tcp_length - 8) - len(self.__data)
-					if self.verbose: print("need more data: {}".format(need))
+					self.logger.debug("need more data: %d", need)
 					more_data = self.__recieve_raw_data(need)
 					return b''.join([self.__data, more_data]), len(self.__data) + len(more_data)
 				else:
-					if self.verbose: print("Enough data")
+					self.logger.debug("Enough data")
 					size = len(self.__data)
 					return self.__data, size
 			else:
 				size = len(self.__data)
 				return self.__data, size
 		size = unpack('I', self.__data[1:5])[0]
-		if self.verbose: print("size fill be %i" % size)
+		self.logger.debug("size fill be %i", size)
 		remain = size % MAX_CHUNK
 		packets = (size - remain) // MAX_CHUNK  # should be size /16k
-		if self.verbose: print("rwb: #{} packets of max {} bytes, and extra {} bytes remain".format(packets, MAX_CHUNK, remain))
+		self.logger.debug("rwb: #%d packets of max %d bytes, and extra %d bytes remain", packets, MAX_CHUNK, remain)
 		for _wlk in range(packets):
 			data.append(self.__read_chunk(start, MAX_CHUNK))
 			start += MAX_CHUNK
@@ -1597,7 +1623,7 @@ class ZK(object):
 			data.append(self.__read_chunk(start, remain))
 			start += remain
 		self.free_data()
-		if self.verbose: print("_read w/chunk %i bytes" % start)
+		self.logger.debug("_read w/chunk %i bytes", start)
 		return b''.join(data), start
 
 	def get_attendance(self):
@@ -1610,20 +1636,20 @@ class ZK(object):
 		if self.records == 0:
 			return []
 		users = self.get_users()
-		if self.verbose: print(users)
+		self.logger.debug(users)
 		attendances = []
 		attendance_data, size = self.read_with_buffer(const.CMD_ATTLOG_RRQ)
 		if size < 4:
-			if self.verbose: print("WRN: no attendance data")
+			self.logger.debug("WRN: no attendance data")
 			return []
 		total_size = unpack("I", attendance_data[:4])[0]
 		record_size = total_size // self.records
-		if self.verbose: print("record_size is ", record_size)
+		self.logger.debug("record_size is ", record_size)
 		attendance_data = attendance_data[4:]
 		if record_size == 8:
 			while len(attendance_data) >= 8:
 				uid, status, timestamp, punch = unpack('HB4sB', attendance_data.ljust(8, b'\x00')[:8])
-				if self.verbose: print(codecs.encode(attendance_data[:8], 'hex'))
+				self.logger.debug(codecs.encode(attendance_data[:8], 'hex'))
 				attendance_data = attendance_data[8:]
 				tuser = list(filter(lambda x: x.uid == uid, users))
 				if not tuser:
@@ -1637,11 +1663,11 @@ class ZK(object):
 			while len(attendance_data) >= 16:
 				user_id, timestamp, status, punch, reserved, workcode = unpack('<I4sBB2sI', attendance_data.ljust(16, b'\x00')[:16])
 				user_id = str(user_id)
-				if self.verbose: print(codecs.encode(attendance_data[:16], 'hex'))
+				self.logger.debug(codecs.encode(attendance_data[:16], 'hex'))
 				attendance_data = attendance_data[16:]
 				tuser = list(filter(lambda x: x.user_id == user_id, users))
 				if not tuser:
-					if self.verbose: print("no uid {}", user_id)
+					self.logger.debug("no uid %d", user_id)
 					uid = str(user_id)
 					tuser = list(filter(lambda x: x.uid == user_id, users))
 					if not tuser:
@@ -1657,7 +1683,7 @@ class ZK(object):
 		else:
 			while len(attendance_data) >= 40:
 				uid, user_id, status, timestamp, punch, space = unpack('<H24sB4sB8s', attendance_data.ljust(40, b'\x00')[:40])
-				if self.verbose: print(codecs.encode(attendance_data[:40], 'hex'))
+				self.logger.debug(codecs.encode(attendance_data[:40], 'hex'))
 				user_id = (user_id.split(b'\x00')[0]).decode(errors='ignore')
 				timestamp = self.__decode_time(timestamp)
 
