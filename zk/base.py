@@ -62,13 +62,14 @@ class ZK_helper(object):
 	ZK helper class
 	"""
 
-	def __init__(self, ip, port=4370):
+	def __init__(self, ip, port=4370, time_out=10):
 		"""
 		Construct a new 'ZK_helper' object.
 		"""
 		self.address = (ip, port)
 		self.ip = ip
 		self.port = port
+		self.time_out = time_out
 
 	def test_ping(self):
 		"""
@@ -93,7 +94,7 @@ class ZK_helper(object):
 		"""
 
 		self.client = socket(AF_INET, SOCK_STREAM)
-		self.client.settimeout(10)
+		self.client.settimeout(self.time_out)
 		res = self.client.connect_ex(self.address)
 		self.client.close()
 		return res
@@ -103,7 +104,7 @@ class ZK_helper(object):
 		test UDP connection
 		"""
 		self.client = socket(AF_INET, SOCK_DGRAM)
-		self.client.settimeout(10)
+		self.client.settimeout(self.time_out)
 
 
 class ZK(object):
@@ -137,7 +138,7 @@ class ZK(object):
 
 		self.is_connect = False
 		self.is_enabled = True
-		self.helper = ZK_helper(ip, port)
+		self.helper = ZK_helper(ip, port, timeout)
 		self.force_udp = force_udp
 		self.ommit_ping = ommit_ping
 		self.verbose = verbose
